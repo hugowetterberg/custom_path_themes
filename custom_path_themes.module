@@ -1,0 +1,192 @@
+<?php
+// $Id$
+
+/**
+ * Implementation of hook_init().
+ */
+function custom_path_themes_init() {
+  // Use the front page theme if applicable
+  if (drupal_is_front_page() && $front_theme=variable_get('custom_path_themes_front', 0)) {
+    global $custom_theme;
+    $custom_theme = $front_theme;
+  }
+  else {
+    $alias = drupal_get_path_alias($_GET['q']);
+    $q = $_GET['q'];
+    
+    $cp_themes = variable_get('custom_path_themes', 0);
+    
+    if (!($theme = custom_path_themes_match_path($cp_themes, $alias)) && $q!=$alias) {
+      $theme = custom_path_themes_match_path($cp_themes, $q);
+    }
+    if ($theme) {
+      global $custom_theme;
+      $custom_theme = $theme;
+    }
+  }
+}
+
+/**
+ * Matches a path/alias against a custom path themes configuration
+ * array and returns a theme name if we have a match.
+ *
+ * @param array $cp_themes A custom path themes configuration array
+ * @param string $q The path to test
+ *
+ * @return string Returns a theme name if we have a match, otherwise Null is returned
+ **/
+function custom_path_themes_match_path($cp_themes, $q) {
+  list($qual, $rest) = split('/', $q, 2);
+  if ($cp_themes && !empty($cp_themes[$qual])) {
+    foreach($cp_themes[$qual] as $def) {
+      list($path, $theme) = $def;
+      $plen = strlen($path);
+      if (substr($path, $plen-1) == '*') {
+        if (substr($rest, 0, $plen-1) .'*' == $path) {
+          return $theme;
+        }
+      }
+      else if ($rest == $path) {
+        return $theme;
+      }
+    }
+  }
+}
+
+/**
+ * Implementation of hook_menu().
+ */
+function custom_path_themes_menu() {
+  $items['admin/settings/custom-path-themes'] = array(
+    'title' => t('Custom path themes'),
+    'description' => t('Change the theme depending on path or alias'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('custom_path_themes_settings'),
+    'access arguments' => array('administer site configuration'),
+  );
+  return $items;
+}
+
+/**
+ * Rteurns the settings form for custom path themes
+ *
+ * @return array
+ **/
+function custom_path_themes_settings() {
+  $themes = system_theme_data();
+  $form = array();
+  
+  // Create options for front page theme selector
+  $options[0] = '<'. t('System default') .'>';
+  $theme_names = array();
+  foreach ($themes as $theme) {
+    $options[$theme->name] = $theme->info['name'];
+    // Collect theme names that can be used for the
+    // description of the custom_path_themes-field
+    $theme_names[] = $theme->name;
+  }
+  
+  // Selector for the front page field
+  $form['custom_path_themes_front'] = array(
+    '#type' => 'select',
+    '#options' => $options,
+    '#title' => t('Front page theme'),
+    '#description' => t('Choose which theme should be used for the front page'),
+    '#default_value' => variable_get('custom_path_themes_front', 0),
+  );
+  
+  // Reconstruct the custom path themes configuration text
+  // from the settings array
+  $txt_cp_themes = '';
+  $cp_themes = variable_get('custom_path_themes', array());
+  foreach($cp_themes as $qual => $info) {
+    foreach ($info as $def) {
+      list($path, $theme) = $def;
+      $txt_cp_themes .= $theme .' '. $qual .'/'. $path ."\n";
+    }
+  }
+  
+  // Custom path themes configuration textarea
+  $form['custom_path_themes'] = array(
+    '#type' => 'textarea',
+    '#title' => t('Custom themes for paths'),
+    '#default_value' => $txt_cp_themes,
+    '#description' => t('Enter the theme name followed by the path to use it on, wilcards (*) can be at the end of paths. The following themes are available: !theme_names', 
+      array('!theme_names' => join(', ', $theme_names))),
+  );
+  
+  // Piggyback on the system settings form for buttons and so on
+  $form = system_settings_form($form);
+  // ...but replace the #submit function
+  $form['#submit'] = array('custom_path_themes_settings_submit');
+  return $form;
+}
+
+/**
+ * Stores the settings for custom path themes
+ *
+ * @return void
+ **/
+function custom_path_themes_settings_submit($form, &$form_state) {
+  $initialize = array();
+  $themes = system_theme_data();
+  $form = array();
+
+  // Create a lookup array for themes so that we can
+  // check if themes exists
+  $theme_names = array();
+  foreach ($themes as $theme) {
+    $theme_names[$theme->name] = $theme;
+  }
+  
+  if (empty($form_state['values']['custom_path_themes_front'])) {
+    variable_del('custom_path_themes_front');
+  }
+  else {
+    // Queue the theme for block initialization
+    $initialize[$form_state['values']['custom_path_themes_front']] = True;
+    variable_set('custom_path_themes_front', $form_state['values']['custom_path_themes_front']);
+  }
+  
+  if (empty($form_state['values']['custom_path_themes'])) {
+    variable_del('custom_path_themes');
+  }
+  else {
+    $cp_themes = array();
+    
+    // Construct the custom path themes array from the lines in custom_path_themes
+    $lines = split("\n",$form_state['values']['custom_path_themes']);
+    
+    foreach ($lines as $line) {
+      $parts = array();
+      if (preg_match('/^([a-z_]+)\s+(.*)$/m', $line, $parts)) {
+        // Isolate the first part of the part as $qual
+        list($qual, $rest) = split('/', $parts[2], 2);
+        
+        // Make sure that we have an array for the first (qualifying) 
+        // part of the path
+        if (!isset($cp_themes[$qual])) {
+          $cp_themes[$qual] = array();
+        }
+        // Store the rest of the path and its associated theme
+        $cp_themes[$qual][] = array(trim($rest), $parts[1]);
+        
+        // Queue the theme for block initialization
+        $initialize[$parts[1]] = True;
+      }
+    }
+    
+    // Store the setting as a variable
+    variable_set('custom_path_themes', $cp_themes);
+  }
+  
+  // Initialize blocks for previously uninitialized themes
+  foreach($initialize as $theme => $init) {
+    if (isset($theme_names[$theme])) { // If the theme exists
+      $result = db_result(db_query("SELECT COUNT(*) FROM {blocks} WHERE theme = '%s'", $theme));
+      if (!$result) {
+        system_initialize_theme_blocks($theme);
+      }
+    }
+  }
+}

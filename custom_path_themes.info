@@ -1,0 +1,6 @@
+; $Id$ 
+name = "Custom path themes"
+description = "Allows site admins to change the theme for different parts of a site"
+package = "Themes"
+version = "6.x-0.x"
+core = "6.x"

@@ -1,0 +1,7 @@
+<?php
+// $Id$
+
+function custom_path_themes_uninstall() {
+  variable_del('custom_path_themes');
+  variable_del('custom_path_themes_front');
+}
